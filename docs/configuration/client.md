@@ -69,4 +69,5 @@ license: |
 | celeborn.test.retryCommitFiles | false | Fail commitFile request for test | 0.2.0 | 
 | celeborn.worker.excluded.checkInterval | 30s | Interval for client to refresh excluded worker list. | 0.2.0 | 
 | celeborn.worker.excluded.expireTimeout | 600s | Timeout time for LifecycleManager to clear reserved excluded worker. | 0.2.0 | 
+| celeborn.mappartition.memory.per.result.partition | 64m | The size of network buffers required per result partition. The minimum valid value is 8M. Usually, several hundreds of megabytes memory is enough for large scale batch jobs. | 0.2.0 | 
 <!--end-include-->

@@ -36,7 +36,6 @@
     <module>service</module>
     <module>master</module>
     <module>worker</module>
-    <module>tests/spark-it</module>
   </modules>
 
   <distributionManagement>
@@ -851,6 +850,7 @@
         <module>client-spark/common</module>
         <module>client-spark/spark-2</module>
         <module>client-spark/spark-2-shaded</module>
+        <module>tests/spark-it</module>
       </modules>
       <properties>
         <jackson.version>2.6.7</jackson.version>
@@ -881,6 +881,7 @@
         <module>client-spark/common</module>
         <module>client-spark/spark-3</module>
         <module>client-spark/spark-3-shaded</module>
+        <module>tests/spark-it</module>
       </modules>
       <properties>
         <jackson.version>2.10.0</jackson.version>
@@ -899,6 +900,7 @@
         <module>client-spark/common</module>
         <module>client-spark/spark-3</module>
         <module>client-spark/spark-3-shaded</module>
+        <module>tests/spark-it</module>
       </modules>
       <properties>
         <jackson.version>2.10.0</jackson.version>
@@ -917,6 +919,7 @@
         <module>client-spark/common</module>
         <module>client-spark/spark-3</module>
         <module>client-spark/spark-3-shaded</module>
+        <module>tests/spark-it</module>
       </modules>
       <properties>
         <jackson.version>2.12.3</jackson.version>
@@ -935,6 +938,7 @@
         <module>client-spark/common</module>
         <module>client-spark/spark-3</module>
         <module>client-spark/spark-3-shaded</module>
+        <module>tests/spark-it</module>
       </modules>
       <properties>
         <jackson.version>2.13.4</jackson.version>
@@ -944,6 +948,23 @@
         <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.3.1</spark.version>
         <zstd-jni.version>1.5.2-1</zstd-jni.version>
+      </properties>
+    </profile>
+
+    <profile>
+      <id>flink-1.14</id>
+      <modules>
+        <module>client-flink/flink-1.14</module>
+        <module>client-flink/flink-common</module>
+      </modules>
+      <properties>
+        <jackson.version>2.6.7</jackson.version>
+        <jackson.databind.version>2.6.7.3</jackson.databind.version>
+        <lz4-java.version>1.4.0</lz4-java.version>
+        <scala.binary.version>2.12</scala.binary.version>
+        <zstd-jni.version>1.4.4-3</zstd-jni.version>
+        <scala.version>2.12.15</scala.version>
+        <flink.version>1.14.0</flink.version>
       </properties>
     </profile>
 

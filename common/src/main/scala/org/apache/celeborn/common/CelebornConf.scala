@@ -738,6 +738,12 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   def workerDirectMemoryRatioForShuffleStorage: Double =
     get(WORKER_DIRECT_MEMORY_RATIO_FOR_SHUFFLE_STORAGE)
 
+  // //////////////////////////////////////////////////////
+  //                  MAP PARTITION PLUGIN                     //
+  // //////////////////////////////////////////////////////
+
+  def memoryPerResultPartition: String = get(MEMORY_PER_RESULT_PARTITION)
+
   /**
    * @return workingDir, usable space, flusher thread count, disk type
    *         check more details at CONFIGURATION_GUIDE.md
@@ -2714,4 +2720,13 @@ object CelebornConf extends Logging {
       .doc("Timeout for a task to push data rpc message.")
       .timeConf(TimeUnit.MILLISECONDS)
       .createWithDefaultString("120s")
+
+  val MEMORY_PER_RESULT_PARTITION: ConfigEntry[String] =
+    buildConf("celeborn.mappartition.memory.per.result.partition")
+      .withAlternative("rss.mappartition.memory.per.result.partition")
+      .categories("client")
+      .version("0.2.0")
+      .doc("The size of network buffers required per result partition. The minimum valid value is 8M. Usually, several hundreds of megabytes memory is enough for large scale batch jobs.")
+      .stringConf
+      .createWithDefault("64m")
 }
