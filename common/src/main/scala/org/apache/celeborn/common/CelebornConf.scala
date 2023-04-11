@@ -616,6 +616,7 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   def haMasterRatisSnapshotAutoTriggerThreshold: Long =
     get(HA_MASTER_RATIS_SNAPSHOT_AUTO_TRIGGER_THRESHOLD)
   def haMasterRatisSnapshotRetentionFileNum: Int = get(HA_MASTER_RATIS_SNAPSHOT_RETENTION_FILE_NUM)
+  def haMasterRatisLeaderSuggestUseIp: Boolean = get(HA_MASTER_RATIS_LEADER_SUGGEST_USE_IP)
 
   // //////////////////////////////////////////////////////
   //                      Worker                         //
@@ -1803,6 +1804,16 @@ object CelebornConf extends Logging {
       .version("0.3.0")
       .intConf
       .createWithDefault(3)
+
+  val HA_MASTER_RATIS_LEADER_SUGGEST_USE_IP: ConfigEntry[Boolean] =
+    buildConf("celeborn.ha.master.ratis.raft.server.leader.useIp")
+      .internal
+      .categories("master")
+      .version("0.3.0")
+      .doc("Whether to return leader ip instead hostname when client connect to follower, this will useful for " +
+        "client not in same dns environment.")
+      .booleanConf
+      .createWithDefault(false)
 
   val MASTER_SLOT_ASSIGN_POLICY: ConfigEntry[String] =
     buildConf("celeborn.master.slot.assign.policy")

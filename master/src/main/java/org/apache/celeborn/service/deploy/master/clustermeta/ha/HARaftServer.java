@@ -45,6 +45,7 @@ import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import org.apache.ratis.util.LifeCycle;
+import org.apache.ratis.util.NetUtils;
 import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
 import org.slf4j.Logger;
@@ -93,6 +94,8 @@ public class HARaftServer {
   private long workerTimeoutDeadline;
   private long appTimeoutDeadline;
 
+  private boolean suggestLeaderUseIpAddress;
+
   /**
    * Returns an Master Ratis server.
    *
@@ -117,6 +120,7 @@ public class HARaftServer {
     this.raftGroup = RaftGroup.valueOf(RAFT_GROUP_ID, raftPeers);
     this.masterStateMachine = getStateMachine();
     this.conf = conf;
+    this.suggestLeaderUseIpAddress = conf.haMasterRatisLeaderSuggestUseIp();
     RaftProperties serverProperties = newRaftProperties(conf);
     setDeadlineTime(Integer.MAX_VALUE, Integer.MAX_VALUE); // for default
     this.server =
@@ -399,6 +403,7 @@ public class HARaftServer {
     }
 
     // Get the server role from ratis server and update the cached values.
+    LOG.debug("Not Leader: {}", this.cachedPeerRole);
     updateServerRole();
 
     // After updating the server role, check and return if leader or not.
@@ -427,6 +432,8 @@ public class HARaftServer {
       GroupInfoReply groupInfo = getGroupInfo();
       RaftProtos.RoleInfoProto roleInfoProto = groupInfo.getRoleInfoProto();
       RaftProtos.RaftPeerRole thisNodeRole = roleInfoProto.getRole();
+
+      LOG.debug("roleInfoProto: {}", roleInfoProto);
 
       if (thisNodeRole.equals(RaftProtos.RaftPeerRole.LEADER)) {
         setServerRole(thisNodeRole, getRpcEndpoint());
@@ -476,10 +483,38 @@ public class HARaftServer {
             leaderPeerRpcEndpoint);
       }
 
+      Optional<String> oldCachedLeaderPeerRpcEndpoint = cachedLeaderPeerRpcEndpoint;
       this.cachedPeerRole = Optional.ofNullable(currentRole);
-      this.cachedLeaderPeerRpcEndpoint = Optional.ofNullable(leaderPeerRpcEndpoint);
+      if (leaderPeerRpcEndpoint != null && suggestLeaderUseIpAddress) {
+        setLeaderPeerRpcEndpoint(leaderPeerRpcEndpoint);
+      } else {
+        this.cachedLeaderPeerRpcEndpoint = Optional.ofNullable(leaderPeerRpcEndpoint);
+      }
+
+      if (!oldCachedLeaderPeerRpcEndpoint.equals(this.cachedLeaderPeerRpcEndpoint)) {
+        LOG.info("raft cache leader peer address: {}", cachedLeaderPeerRpcEndpoint);
+      }
+
     } finally {
       this.roleCheckLock.writeLock().unlock();
+    }
+  }
+
+  private void setLeaderPeerRpcEndpoint(String leaderPeerRpcEndpoint) {
+    try {
+      String[] hostPort = leaderPeerRpcEndpoint.split(":");
+      InetSocketAddress socketAddr =
+          NetUtils.createSocketAddr(hostPort[0], Integer.parseInt(hostPort[1]));
+      if (socketAddr.isUnresolved()) {
+        this.cachedLeaderPeerRpcEndpoint = Optional.ofNullable(leaderPeerRpcEndpoint);
+      } else {
+        this.cachedLeaderPeerRpcEndpoint =
+            Optional.ofNullable(
+                socketAddr.getAddress().getHostAddress() + ":" + socketAddr.getPort());
+      }
+    } catch (Exception e) {
+      LOG.error(e.getMessage(), e);
+      this.cachedLeaderPeerRpcEndpoint = Optional.ofNullable(leaderPeerRpcEndpoint);
     }
   }
 
