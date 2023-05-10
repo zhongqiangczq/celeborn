@@ -1034,7 +1034,7 @@
         <module>tests/flink-it</module>
       </modules>
       <properties>
-        <flink.version>1.15.4</flink.version>
+        <flink.version>1.15-vvr-6.0.6-SNAPSHOT</flink.version>
         <flink.binary.version>1.15</flink.binary.version>
         <scala.binary.version>2.12</scala.binary.version>
         <celeborn.flink.plugin.artifact>celeborn-client-flink-1.15_${scala.binary.version}</celeborn.flink.plugin.artifact>
@@ -1054,7 +1054,7 @@
         <module>tests/flink-it</module>
       </modules>
       <properties>
-        <flink.version>1.17.0</flink.version>
+        <flink.version>1.17-vvr-8.0.0-SNAPSHOT</flink.version>
         <flink.binary.version>1.17</flink.binary.version>
         <scala.binary.version>2.12</scala.binary.version>
         <celeborn.flink.plugin.artifact>celeborn-client-flink-1.17_${scala.binary.version}</celeborn.flink.plugin.artifact>

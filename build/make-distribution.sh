@@ -188,7 +188,7 @@ function build_spark_client {
 }
 
 function build_flink_client {
-  FLINK_VERSION=$("$MVN" help:evaluate -Dexpression=flink.version $@ 2>/dev/null \
+  FLINK_BINARY_VERSION=$("$MVN" help:evaluate -Dexpression=flink.binary.version $@ 2>/dev/null \
       | grep -v "INFO" \
       | grep -v "WARNING" \
       | tail -n 1)
@@ -196,7 +196,6 @@ function build_flink_client {
       | grep -v "INFO" \
       | grep -v "WARNING" \
       | tail -n 1)
-  FLINK_BINARY_VERSION=${FLINK_VERSION%.*}
 
   # Store the command as an array because $MVN variable might have spaces in it.
   # Normal quoting tricks don't work.
