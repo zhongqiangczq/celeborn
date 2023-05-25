@@ -17,6 +17,7 @@
 
 package org.apache.celeborn.client
 
+import java.io.DataOutputStream
 import java.util
 import java.util.{function, List => JList}
 import java.util.concurrent.{ConcurrentHashMap, ScheduledFuture, TimeUnit}
@@ -30,6 +31,7 @@ import com.google.common.annotations.VisibleForTesting
 
 import org.apache.celeborn.client.LifecycleManager.{ShuffleAllocatedWorkers, ShuffleFailedWorkers}
 import org.apache.celeborn.client.listener.WorkerStatusListener
+import org.apache.celeborn.client.recover.{ApplyResourceOperationLog, CommitOperationLog, DummyRecoverableStore, OperationLog, RecoverableStore, ReleaseResourceOperationLog, ReleaseShuffleOperationLog, Restore}
 import org.apache.celeborn.common.CelebornConf
 import org.apache.celeborn.common.client.MasterClient
 import org.apache.celeborn.common.identity.{IdentityProvider, UserIdentifier}
@@ -53,8 +55,14 @@ object LifecycleManager {
   type ShuffleFailedWorkers = ConcurrentHashMap[WorkerInfo, (StatusCode, Long)]
 }
 
-class LifecycleManager(val appUniqueId: String, val conf: CelebornConf) extends RpcEndpoint
-  with Logging {
+class LifecycleManager(
+    val appUniqueId: String,
+    val conf: CelebornConf,
+    val recoverableStore: RecoverableStore) extends RpcEndpoint with Logging with Restore {
+
+  def this(appId: String, conf: CelebornConf) {
+    this(appId, conf, new DummyRecoverableStore())
+  }
 
   private val lifecycleHost = Utils.localHostName(conf)
 
@@ -137,12 +145,12 @@ class LifecycleManager(val appUniqueId: String, val conf: CelebornConf) extends 
   // a reference to `masterClient`, there may be cases where `masterClient` is null when
   // `masterClient` is called. Therefore, it's necessary to uniformly execute the initialization
   // method at the end of the construction of the class to perform the initialization operations.
-  private def initialize(): Unit = {
+  def initialize(): Unit = {
     // noinspection ConvertExpressionToSAM
     commitManager.start()
-    heartbeater.start()
     changePartitionManager.start()
     releasePartitionManager.start()
+    heartbeater.start()
   }
 
   override def onStart(): Unit = {
@@ -428,29 +436,7 @@ class LifecycleManager(val appUniqueId: String, val conf: CelebornConf) extends 
     // Reserve slots for each PartitionLocation. When response status is SUCCESS, WorkerResource
     // won't be empty since primary will reply SlotNotAvailable status when reserved slots is empty.
     val slots = res.workerResource
-    val candidatesWorkers = new util.HashSet(slots.keySet())
-    val connectFailedWorkers = new ShuffleFailedWorkers()
-
-    // Second, for each worker, try to initialize the endpoint.
-    val parallelism = Math.min(Math.max(1, slots.size()), conf.clientRpcMaxParallelism)
-    ThreadUtils.parmap(slots.asScala.to, "InitWorkerRef", parallelism) { case (workerInfo, _) =>
-      try {
-        workerInfo.endpoint =
-          rpcEnv.setupEndpointRef(RpcAddress.apply(workerInfo.host, workerInfo.rpcPort), WORKER_EP)
-      } catch {
-        case t: Throwable =>
-          logError(s"Init rpc client failed for $shuffleId on $workerInfo during reserve slots.", t)
-          connectFailedWorkers.put(
-            workerInfo,
-            (StatusCode.WORKER_UNKNOWN, System.currentTimeMillis()))
-      }
-    }
-
-    candidatesWorkers.removeAll(connectFailedWorkers.asScala.keys.toList.asJava)
-    workerStatusTracker.recordWorkerFailure(connectFailedWorkers)
-    // If newly allocated from primary and can setup endpoint success, LifecycleManager should remove worker from
-    // the excluded worker list to improve the accuracy of the list.
-    workerStatusTracker.removeFromExcludedWorkers(candidatesWorkers)
+    val candidatesWorkers = setupWorkersEndpoint(shuffleId, slots.keySet())
 
     // Third, for each slot, LifecycleManager should ask Worker to reserve the slot
     // and prepare the pushing data env.
@@ -484,6 +470,11 @@ class LifecycleManager(val appUniqueId: String, val conf: CelebornConf) extends 
       shuffleAllocatedWorkers.put(shuffleId, allocatedWorkers)
       registeredShuffle.add(shuffleId)
       commitManager.registerShuffle(shuffleId, numMappers)
+      recoverableStore.writeOperation(new ApplyResourceOperationLog(
+        shuffleId,
+        shufflePartitionType.get(shuffleId),
+        numMappers,
+        allocatedWorkers))
 
       // Fifth, reply the allocated partition location to ShuffleClient.
       logInfo(s"Handle RegisterShuffle Success for $shuffleId.")
@@ -1160,6 +1151,7 @@ class LifecycleManager(val appUniqueId: String, val conf: CelebornConf) extends 
     }
 
     releasePartitionManager.releasePartition(shuffleId, partitionId)
+    recoverableStore.writeOperation(new ReleaseResourceOperationLog(shuffleId, partitionId))
   }
 
   def getAllocatedWorkers(): Set[WorkerInfo] = {
@@ -1171,6 +1163,52 @@ class LifecycleManager(val appUniqueId: String, val conf: CelebornConf) extends 
     workerStatusTracker.registerWorkerStatusListener(workerStatusListener)
   }
 
-  // Initialize at the end of LifecycleManager construction.
-  initialize()
+  override def replay(operationLog: OperationLog): Unit = {
+    operationLog.getType match {
+      case OperationLog.Type.APPLY_RESOURCE =>
+        val applyResourceOperationLog = operationLog.asInstanceOf[ApplyResourceOperationLog]
+        val shuffleId = applyResourceOperationLog.getShuffleId
+        val slots = applyResourceOperationLog.getShufflePartitionLocationInfo
+        setupWorkersEndpoint(shuffleId, slots.keySet())
+        shuffleAllocatedWorkers.put(
+          shuffleId,
+          applyResourceOperationLog.getShufflePartitionLocationInfo)
+        shufflePartitionType.put(shuffleId, applyResourceOperationLog.getPartitionType)
+        commitManager.registerShuffle(shuffleId, applyResourceOperationLog.getNumMappers)
+        registeredShuffle.add(shuffleId)
+      case OperationLog.Type.COMMIT_RESOURCE =>
+        commitManager.replay(operationLog)
+      case OperationLog.Type.SHUFFLE_EPOCH =>
+        commitManager.replay(operationLog)
+      case _ =>
+    }
+  }
+
+  def setupWorkersEndpoint(
+      shuffleId: Int,
+      workers: util.Set[WorkerInfo]): util.HashSet[WorkerInfo] = {
+    val connectFailedWorkers = new ShuffleFailedWorkers()
+    val candidatesWorkers = new util.HashSet(workers)
+
+    val parallelism = Math.min(Math.max(1, workers.size()), conf.clientRpcMaxParallelism)
+    ThreadUtils.parmap(workers.asScala.to, "InitWorkerRef", parallelism) { case (workerInfo) =>
+      try {
+        workerInfo.endpoint =
+          rpcEnv.setupEndpointRef(RpcAddress.apply(workerInfo.host, workerInfo.rpcPort), WORKER_EP)
+      } catch {
+        case t: Throwable =>
+          logError(s"Init rpc client failed for $shuffleId on $workerInfo during reserve slots.", t)
+          connectFailedWorkers.put(
+            workerInfo,
+            (StatusCode.WORKER_UNKNOWN, System.currentTimeMillis()))
+      }
+    }
+    candidatesWorkers.removeAll(connectFailedWorkers.asScala.keys.toList.asJava)
+    workerStatusTracker.recordWorkerFailure(connectFailedWorkers)
+    // If newly allocated from primary and can setup endpoint success, LifecycleManager should remove worker from
+    // the excluded worker list to improve the accuracy of the list.
+    workerStatusTracker.removeFromExcludedWorkers(candidatesWorkers)
+    candidatesWorkers
+  }
+
 }

@@ -27,6 +27,9 @@ import scala.collection.mutable
 import org.apache.celeborn.client.{ShuffleCommittedInfo, WorkerStatusTracker}
 import org.apache.celeborn.client.CommitManager.CommittedPartitionInfo
 import org.apache.celeborn.client.LifecycleManager.{ShuffleFailedWorkers, ShuffleFileGroups}
+import org.apache.celeborn.client.ShuffleCommittedInfo
+import org.apache.celeborn.client.recover.{OperationLog, RecoverableStore, Restore, ShuffleEpochOperationLog}
+import org.apache.celeborn.client.recover.RecoverableStore.ID_PERSISTENT_STEP
 import org.apache.celeborn.common.CelebornConf
 import org.apache.celeborn.common.internal.Logging
 import org.apache.celeborn.common.meta.{ShufflePartitionLocationInfo, WorkerInfo}
@@ -47,7 +50,8 @@ abstract class CommitHandler(
     appUniqueId: String,
     conf: CelebornConf,
     committedPartitionInfo: CommittedPartitionInfo,
-    workerStatusTracker: WorkerStatusTracker) extends Logging {
+    workerStatusTracker: WorkerStatusTracker,
+    recoverableStore: RecoverableStore) extends Logging with Restore {
 
   private val pushReplicateEnabled = conf.clientPushReplicateEnabled
   private val testRetryCommitFiles = conf.testRetryCommitFiles
@@ -265,7 +269,7 @@ abstract class CommitHandler(
           primaryIds,
           replicaIds,
           getMapperAttempts(shuffleId),
-          commitEpoch.incrementAndGet())
+          getCommitEpoch())
         val res =
           if (conf.clientCommitFilesIgnoreExcludedWorkers &&
             workerStatusTracker.excludedWorkers.containsKey(worker)) {
@@ -299,7 +303,7 @@ abstract class CommitHandler(
           primaryIds.subList(0, primaryIds.size() / 2),
           replicaIds.subList(0, replicaIds.size() / 2),
           getMapperAttempts(shuffleId),
-          commitEpoch.incrementAndGet())
+          getCommitEpoch)
         val res1 = requestCommitFilesWithRetry(worker.endpoint, commitFiles1)
 
         val commitFiles = CommitFiles(
@@ -308,7 +312,7 @@ abstract class CommitHandler(
           primaryIds.subList(primaryIds.size() / 2, primaryIds.size()),
           replicaIds.subList(replicaIds.size() / 2, replicaIds.size()),
           getMapperAttempts(shuffleId),
-          commitEpoch.incrementAndGet())
+          getCommitEpoch)
         val res2 = requestCommitFilesWithRetry(worker.endpoint, commitFiles)
 
         res1.committedPrimaryStorageInfos.putAll(res2.committedPrimaryStorageInfos)
@@ -485,4 +489,31 @@ abstract class CommitHandler(
       fileGroups.remove(partitionId)
     }
   }
+
+  def getCommitEpoch(): Long = {
+    if (!recoverableStore.supportRecoverable()) {
+      commitEpoch.getAndIncrement()
+    } else {
+      synchronized {
+        val epoch = commitEpoch.getAndIncrement()
+        if (epoch % ID_PERSISTENT_STEP == 0) {
+          val nextIndex = Math.ceil((epoch + 1.0) / ID_PERSISTENT_STEP).toInt
+          recoverableStore.writeOperation(
+            new ShuffleEpochOperationLog(getPartitionType(), nextIndex * ID_PERSISTENT_STEP))
+          logInfo(s"EpochStepIndex, epoch: $epoch, nextIndex: ${nextIndex * ID_PERSISTENT_STEP}")
+        }
+        epoch
+      }
+    }
+  }
+
+  override def replay(operationLog: OperationLog): Unit = {
+    operationLog.getType match {
+      case OperationLog.Type.SHUFFLE_EPOCH =>
+        val shuffleEpochOperationLog = operationLog.asInstanceOf[ShuffleEpochOperationLog]
+        commitEpoch.set(shuffleEpochOperationLog.getEpoch)
+      case _ =>
+    }
+  }
+
 }

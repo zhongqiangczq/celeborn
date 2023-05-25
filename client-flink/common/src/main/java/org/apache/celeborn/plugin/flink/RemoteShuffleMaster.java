@@ -17,13 +17,16 @@
 
 package org.apache.celeborn.plugin.flink;
 
-import java.util.HashSet;
+import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.configuration.DeploymentOptions;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.shuffle.*;
@@ -31,19 +34,23 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.celeborn.client.LifecycleManager;
+import org.apache.celeborn.client.recover.OperationLog;
+import org.apache.celeborn.client.recover.RecoverableStore;
 import org.apache.celeborn.common.CelebornConf;
-import org.apache.celeborn.common.util.JavaUtils;
+import org.apache.celeborn.plugin.flink.recover.AppRegisterOperationLog;
+import org.apache.celeborn.plugin.flink.recover.RecoverableStoreFactory;
+import org.apache.celeborn.plugin.flink.recover.UnregisterJobOperationLog;
 import org.apache.celeborn.plugin.flink.utils.FlinkUtils;
 import org.apache.celeborn.plugin.flink.utils.ThreadUtils;
 
 public class RemoteShuffleMaster implements ShuffleMaster<RemoteShuffleDescriptor> {
   private static final Logger LOG = LoggerFactory.getLogger(RemoteShuffleMaster.class);
   private final ShuffleMasterContext shuffleMasterContext;
-  // Flink JobId -> Celeborn register shuffleIds
-  private Map<JobID, Set<Integer>> jobShuffleIds = JavaUtils.newConcurrentHashMap();
+  private final boolean jobManagerFailoverEnabled;
+  private final boolean isApplicationMode;
   private String celebornAppId;
   private volatile LifecycleManager lifecycleManager;
-  private ShuffleTaskInfo shuffleTaskInfo = new ShuffleTaskInfo();
+  private ShuffleTaskInfo shuffleTaskInfo;
   private ShuffleResourceTracker shuffleResourceTracker;
   private final ScheduledThreadPoolExecutor executor =
       new ScheduledThreadPoolExecutor(
@@ -52,58 +59,69 @@ public class RemoteShuffleMaster implements ShuffleMaster<RemoteShuffleDescripto
               "remote-shuffle-master-executor", LOG));
   private final ResultPartitionAdapter resultPartitionDelegation;
   private final long lifecycleManagerTimestamp;
+  private CelebornConf celebornConf;
+  private RecoverableStore recoverableStore;
+  private Map<JobID, Long> expiredJobIds = new ConcurrentHashMap<>();
 
   public RemoteShuffleMaster(
       ShuffleMasterContext shuffleMasterContext, ResultPartitionAdapter resultPartitionDelegation) {
     this.shuffleMasterContext = shuffleMasterContext;
     this.resultPartitionDelegation = resultPartitionDelegation;
     this.lifecycleManagerTimestamp = System.currentTimeMillis();
+    this.celebornConf = FlinkUtils.toCelebornConf(shuffleMasterContext.getConfiguration());
+    // if not set, set to true as default for flink
+    celebornConf.setIfMissing(CelebornConf.CLIENT_CHECKED_USE_ALLOCATED_WORKERS(), true);
+    if (celebornConf.clientPushReplicateEnabled()) {
+      shuffleMasterContext.onFatalError(
+          new RuntimeException("Currently replicate shuffle data is unsupported for flink."));
+    }
+
+    this.isApplicationMode = FlinkUtils.isApplicationMode(shuffleMasterContext.getConfiguration());
+    if (isApplicationMode) {
+      this.jobManagerFailoverEnabled =
+          FlinkUtils.jobManagerFailoverEnabled(shuffleMasterContext.getConfiguration());
+    } else {
+      this.jobManagerFailoverEnabled =
+          FlinkUtils.jobManagerFailoverEnabled(shuffleMasterContext.getConfiguration())
+              && celebornConf.clientFlinkSupportSessionModeFailover();
+    }
+
+    LOG.debug("shuffleMasterContext: {}", shuffleMasterContext.getConfiguration());
   }
 
   @Override
   public void registerJob(JobShuffleContext context) {
     JobID jobID = context.getJobId();
-    if (lifecycleManager == null) {
-      synchronized (RemoteShuffleMaster.class) {
-        if (lifecycleManager == null) {
-          celebornAppId = FlinkUtils.toCelebornAppId(lifecycleManagerTimestamp, jobID);
-          LOG.info("CelebornAppId: {}", celebornAppId);
-          CelebornConf celebornConf =
-              FlinkUtils.toCelebornConf(shuffleMasterContext.getConfiguration());
-          // if not set, set to true as default for flink
-          celebornConf.setIfMissing(CelebornConf.CLIENT_CHECKED_USE_ALLOCATED_WORKERS(), true);
-          lifecycleManager = new LifecycleManager(celebornAppId, celebornConf);
-          if (celebornConf.clientPushReplicateEnabled()) {
-            shuffleMasterContext.onFatalError(
-                new RuntimeException("Currently replicate shuffle data is unsupported for flink."));
-            return;
+    try {
+      if (lifecycleManager == null) {
+        synchronized (RemoteShuffleMaster.class) {
+          if (lifecycleManager == null) {
+            recover(jobID);
           }
-          this.shuffleResourceTracker = new ShuffleResourceTracker(executor, lifecycleManager);
         }
       }
+    } catch (Exception e) {
+      shuffleMasterContext.onFatalError(
+          new RuntimeException("Can not recover from operation log.", e));
     }
 
-    Set<Integer> previousShuffleIds = jobShuffleIds.putIfAbsent(jobID, new HashSet<>());
+    if (expiredJobIds.get(jobID) != null) {
+      expiredJobIds.remove(jobID);
+    }
+
     LOG.info("Register job: {}.", jobID);
     shuffleResourceTracker.registerJob(context);
-    if (previousShuffleIds != null) {
-      throw new RuntimeException("Duplicated registration job: " + jobID);
-    }
   }
 
   @Override
   public void unregisterJob(JobID jobID) {
     LOG.info("Unregister job: {}.", jobID);
-    Set<Integer> shuffleIds = jobShuffleIds.remove(jobID);
+    Set<Integer> shuffleIds = shuffleResourceTracker.getJobShuffleIds(jobID);
     if (shuffleIds != null) {
       executor.execute(
           () -> {
             try {
-              for (Integer shuffleId : shuffleIds) {
-                lifecycleManager.handleUnregisterShuffle(shuffleId);
-                shuffleTaskInfo.removeExpiredShuffle(shuffleId);
-              }
-              shuffleResourceTracker.unRegisterJob(jobID);
+              expireJob(jobID, !jobManagerFailoverEnabled);
             } catch (Throwable throwable) {
               LOG.error("Encounter an error when unregistering job: {}.", jobID, throwable);
             }
@@ -117,11 +135,6 @@ public class RemoteShuffleMaster implements ShuffleMaster<RemoteShuffleDescripto
     CompletableFuture<RemoteShuffleDescriptor> completableFuture =
         CompletableFuture.supplyAsync(
             () -> {
-              Set<Integer> shuffleIds = jobShuffleIds.get(jobID);
-              if (shuffleIds == null) {
-                throw new RuntimeException("Can not find job in lifecycleManager, job: " + jobID);
-              }
-
               FlinkResultPartitionInfo resultPartitionInfo =
                   new FlinkResultPartitionInfo(jobID, partitionDescriptor, producerDescriptor);
               ShuffleResourceDescriptor shuffleResourceDescriptor =
@@ -129,10 +142,6 @@ public class RemoteShuffleMaster implements ShuffleMaster<RemoteShuffleDescripto
                       resultPartitionInfo.getShuffleId(),
                       resultPartitionInfo.getTaskId(),
                       resultPartitionInfo.getAttemptId());
-
-              synchronized (shuffleIds) {
-                shuffleIds.add(shuffleResourceDescriptor.getShuffleId());
-              }
 
               RemoteShuffleResource remoteShuffleResource =
                   new RemoteShuffleResource(
@@ -224,12 +233,134 @@ public class RemoteShuffleMaster implements ShuffleMaster<RemoteShuffleDescripto
   @Override
   public void close() throws Exception {
     try {
-      jobShuffleIds.clear();
       lifecycleManager.stop();
+      recoverableStore.stop();
     } catch (Exception e) {
       LOG.warn("Encounter exception when shutdown: " + e.getMessage(), e);
     }
 
     ThreadUtils.shutdownExecutors(10, executor);
+  }
+
+  public boolean hasJobs() {
+    return !expiredJobIds.isEmpty() && !shuffleResourceTracker.getJobs().isEmpty();
+  }
+
+  private void createLifecycleManager() {
+    LOG.info(
+        "CelebornAppId: {}, mode: {}, jobManagerFailover: {}",
+        celebornAppId,
+        shuffleMasterContext.getConfiguration().get(DeploymentOptions.TARGET),
+        jobManagerFailoverEnabled);
+    lifecycleManager = new LifecycleManager(celebornAppId, celebornConf, recoverableStore);
+    shuffleResourceTracker =
+        new ShuffleResourceTracker(executor, lifecycleManager, recoverableStore);
+    lifecycleManager.registerWorkerStatusListener(shuffleResourceTracker);
+  }
+
+  void recover(JobID currentJobID) throws IOException {
+    String pathId = null;
+    if (isApplicationMode) {
+      // use fixed jobID path persistent operation log
+      pathId = currentJobID.toString();
+    }
+    recoverableStore =
+        RecoverableStoreFactory.createOperationLogStore(
+            pathId, shuffleMasterContext.getConfiguration(), this);
+    shuffleTaskInfo = new ShuffleTaskInfo(recoverableStore);
+    boolean needRecover = true;
+    OperationLog operationLog = recoverableStore.readOperation();
+    if (operationLog != null) {
+      celebornAppId = ((AppRegisterOperationLog) operationLog).getCelebornAppId();
+      recoverableStore.registerIdOperation(operationLog);
+      recoverableStore.setRecoverFinished(false);
+    } else {
+      needRecover = false;
+      celebornAppId = FlinkUtils.toCelebornAppId(lifecycleManagerTimestamp, currentJobID);
+      recoverableStore.registerIdOperation(new AppRegisterOperationLog(celebornAppId));
+      recoverableStore.setRecoverFinished(true);
+    }
+
+    createLifecycleManager();
+    if (!jobManagerFailoverEnabled || !needRecover) {
+      lifecycleManager.initialize();
+      return;
+    }
+
+    while ((operationLog = recoverableStore.readOperation()) != null) {
+      LOG.debug("Recover operationLog: {}", operationLog);
+      if (operationLog instanceof UnregisterJobOperationLog) {
+        UnregisterJobOperationLog unregisterJobOperationLog =
+            (UnregisterJobOperationLog) operationLog;
+        if (!unregisterJobOperationLog.isAlreadyReleased()) {
+          expiredJobIds.put(unregisterJobOperationLog.getJobID(), 0L);
+        } else {
+          expireJob(unregisterJobOperationLog.getJobID(), true);
+        }
+      } else {
+        try {
+          shuffleResourceTracker.replay(operationLog);
+          shuffleTaskInfo.replay(operationLog);
+          lifecycleManager.replay(operationLog);
+        } catch (Exception e) {
+          LOG.warn(
+              "Recover operationLog error, may due to in complete operation log, just ignore this.",
+              e);
+        }
+      }
+    }
+
+    if (needRecover) {
+      recoverableStore.setRecoverFinished(true);
+      lifecycleManager.initialize();
+    }
+
+    try {
+      if (!isApplicationMode) {
+        // refresh unregister jobIds expire time
+        for (JobID jobID : expiredJobIds.keySet()) {
+          expiredJobIds.put(jobID, System.currentTimeMillis());
+        }
+        // expire with fix rate
+        executor.scheduleAtFixedRate(
+            () -> {
+              long current = System.currentTimeMillis();
+              boolean hasExpiredJob = false;
+              for (Map.Entry<JobID, Long> entry : expiredJobIds.entrySet()) {
+                if (current - entry.getValue() > 300 * 1000) {
+                  expireJob(entry.getKey(), true);
+                  hasExpiredJob = true;
+                }
+              }
+
+              if (hasExpiredJob) {
+                recoverableStore.clear();
+              }
+            },
+            180,
+            180,
+            TimeUnit.SECONDS);
+      }
+    } catch (Exception e) {
+      shuffleMasterContext.onFatalError(
+          new RuntimeException("Can not recover from operation log.", e));
+    }
+  }
+
+  private void expireJob(JobID jobID, boolean expireImmediately) {
+    LOG.info("expire flink job: {}, expireImmediately: {}", jobID, expireImmediately);
+    if (expireImmediately) {
+      Set<Integer> shuffleIds = shuffleResourceTracker.getJobShuffleIds(jobID);
+      for (Integer shuffleId : shuffleIds) {
+        lifecycleManager.handleUnregisterShuffle(shuffleId);
+        shuffleTaskInfo.removeExpiredShuffle(shuffleId);
+      }
+      shuffleResourceTracker.unRegisterJob(jobID);
+      expiredJobIds.remove(jobID);
+      recoverableStore.writeOperation(new UnregisterJobOperationLog(jobID, true));
+    } else {
+      expiredJobIds.put(jobID, System.currentTimeMillis());
+      recoverableStore.writeOperation(new UnregisterJobOperationLog(jobID, false));
+    }
   }
 }

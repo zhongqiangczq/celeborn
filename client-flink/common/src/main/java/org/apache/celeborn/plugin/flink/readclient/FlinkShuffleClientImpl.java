@@ -97,13 +97,19 @@ public class FlinkShuffleClientImpl extends ShuffleClientImpl {
       }
     }
 
-    if (driverTimestamp < _instance.driverTimestamp) {
-      String format = "Driver reinitialized or changed driverHost-port-driverTimestamp to %s-%s-%s";
+    FlinkShuffleClientImpl client = _instance;
+    if (driverTimestamp < client.driverTimestamp) {
+      String format =
+          "Driver reinitialized or changed driverHost-port-driverTimestamp from %s-%s-%s";
       String message = String.format(format, driverHost, port, driverTimestamp);
       logger.warn(message);
       throw new DriverChangedException(message);
     }
 
+    return client;
+  }
+
+  public static FlinkShuffleClientImpl get() {
     return _instance;
   }
 

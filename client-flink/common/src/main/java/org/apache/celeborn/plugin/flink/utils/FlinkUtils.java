@@ -22,7 +22,9 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.configuration.ClusterOptions;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 
@@ -74,5 +76,19 @@ public class FlinkUtils {
 
   public static String toAttemptId(ExecutionAttemptID attemptID) {
     return attemptID.toString();
+  }
+
+  public static boolean jobManagerFailoverEnabled(Configuration flinkConf) {
+    return flinkConf.getBoolean(JobManagerOptions.JM_FAILOVER_ENABLED);
+  }
+
+  public static boolean isApplicationMode(Configuration flinkConf) {
+    if (flinkConf.get(ClusterOptions.DEPLOYMENT_MODE) == null) {
+      return false;
+    }
+
+    return !ClusterOptions.DeploymentMode.valueOf(flinkConf.get(ClusterOptions.DEPLOYMENT_MODE))
+        .getClusterMode()
+        .equals(ClusterOptions.ClusterMode.SESSION);
   }
 }

@@ -1016,6 +1016,8 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
   def clientFlinkResultPartitionSupportFloatingBuffer: Boolean =
     get(CLIENT_RESULT_PARTITION_SUPPORT_FLOATING_BUFFER)
   def clientFlinkDataCompressionEnabled: Boolean = get(CLIENT_DATA_COMPRESSION_ENABLED)
+  def clientFlinkSupportSessionModeFailover: Boolean =
+    get(CLIENT_FLINK_SUPPORT_SESSION_MODE_FAILOVER)
 }
 
 object CelebornConf extends Logging {
@@ -3716,4 +3718,11 @@ object CelebornConf extends Logging {
       .stringConf
       .createWithDefault("/100.")
 
+  val CLIENT_FLINK_SUPPORT_SESSION_MODE_FAILOVER: ConfigEntry[Boolean] =
+    buildConf("celeborn.client.flink.support.session.failover")
+      .categories("client")
+      .version("0.3.0")
+      .doc("")
+      .booleanConf
+      .createWithDefault(false)
 }

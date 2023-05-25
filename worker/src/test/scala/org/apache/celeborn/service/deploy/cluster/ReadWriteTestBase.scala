@@ -61,6 +61,7 @@ trait ReadWriteTestBase extends AnyFunSuite
       .set(CelebornConf.CLIENT_PUSH_BUFFER_MAX_SIZE.key, "256K")
       .set("celeborn.data.io.numConnectionsPerPeer", "1")
     val lifecycleManager = new LifecycleManager(APP, clientConf)
+    lifecycleManager.initialize()
     val shuffleClient =
       new ShuffleClientImpl(APP, clientConf, UserIdentifier("mock", "mock"), false)
     shuffleClient.setupLifecycleManagerRef(lifecycleManager.self)

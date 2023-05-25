@@ -31,10 +31,16 @@ import org.slf4j.LoggerFactory;
 import org.apache.celeborn.client.LifecycleManager;
 import org.apache.celeborn.client.listener.WorkerStatusListener;
 import org.apache.celeborn.client.listener.WorkersStatus;
+import org.apache.celeborn.client.recover.OperationLog;
+import org.apache.celeborn.client.recover.RecoverableStore;
+import org.apache.celeborn.client.recover.Restore;
 import org.apache.celeborn.common.meta.ShufflePartitionLocationInfo;
 import org.apache.celeborn.common.meta.WorkerInfo;
+import org.apache.celeborn.plugin.flink.recover.AddPartitionOperationLog;
+import org.apache.celeborn.plugin.flink.recover.RemovePartitionOperationLog;
+import org.apache.celeborn.plugin.flink.recover.UnregisterJobOperationLog;
 
-public class ShuffleResourceTracker implements WorkerStatusListener {
+public class ShuffleResourceTracker implements WorkerStatusListener, Restore {
   private static final Logger LOG = LoggerFactory.getLogger(ShuffleResourceTracker.class);
   private final ExecutorService executorService;
   private final LifecycleManager lifecycleManager;
@@ -42,30 +48,67 @@ public class ShuffleResourceTracker implements WorkerStatusListener {
   private final Map<JobID, JobShuffleResourceListener> shuffleResourceListeners =
       new ConcurrentHashMap<>();
   private static final int MAX_RETRY_TIMES = 3;
+  protected RecoverableStore recoverableStore;
 
   public ShuffleResourceTracker(
-      ExecutorService executorService, LifecycleManager lifecycleManager) {
+      ExecutorService executorService,
+      LifecycleManager lifecycleManager,
+      RecoverableStore recoverableStore) {
     this.executorService = executorService;
     this.lifecycleManager = lifecycleManager;
+    this.recoverableStore = recoverableStore;
     lifecycleManager.registerWorkerStatusListener(this);
   }
 
+  @Override
+  public void replay(OperationLog operationLog) {
+    if (operationLog.getType() == OperationLog.Type.ADD_PARTITION) {
+      AddPartitionOperationLog addPartitionOperationLog = (AddPartitionOperationLog) operationLog;
+
+      if (shuffleResourceListeners.get(addPartitionOperationLog.getJobId()) == null) {
+        shuffleResourceListeners.put(
+            addPartitionOperationLog.getJobId(),
+            new JobShuffleResourceListener(null, executorService, recoverableStore));
+      }
+
+      shuffleResourceListeners
+          .get(addPartitionOperationLog.getJobId())
+          .addPartitionResource(addPartitionOperationLog);
+    } else if (operationLog.getType() == OperationLog.Type.REMOVE_PARTITION) {
+      RemovePartitionOperationLog removePartitionOperationLog =
+          (RemovePartitionOperationLog) operationLog;
+      shuffleResourceListeners
+          .get(removePartitionOperationLog.getJobId())
+          .removePartitionResource(removePartitionOperationLog);
+    } else if (operationLog.getType() == OperationLog.Type.UNREGISTER_JOB) {
+      UnregisterJobOperationLog unregisterJobOperationLog =
+          (UnregisterJobOperationLog) operationLog;
+      shuffleResourceListeners.remove(unregisterJobOperationLog.getJobID());
+    }
+  }
+
   public void registerJob(JobShuffleContext jobShuffleContext) {
-    shuffleResourceListeners.put(
-        jobShuffleContext.getJobId(),
-        new JobShuffleResourceListener(jobShuffleContext, executorService));
+    if (shuffleResourceListeners.get(jobShuffleContext.getJobId()) != null) {
+      shuffleResourceListeners.get(jobShuffleContext.getJobId()).setContext(jobShuffleContext);
+    } else {
+      shuffleResourceListeners.put(
+          jobShuffleContext.getJobId(),
+          new JobShuffleResourceListener(jobShuffleContext, executorService, recoverableStore));
+    }
   }
 
   public void addPartitionResource(
       JobID jobId, int shuffleId, int partitionId, ResultPartitionID partitionID) {
     JobShuffleResourceListener shuffleResourceListener = shuffleResourceListeners.get(jobId);
-    shuffleResourceListener.addPartitionResource(shuffleId, partitionId, partitionID);
+    shuffleResourceListener.addPartitionResource(
+        new AddPartitionOperationLog(jobId, shuffleId, partitionId, partitionID));
   }
 
   public void removePartitionResource(JobID jobID, int shuffleId, int partitionId) {
     JobShuffleResourceListener shuffleResourceListener = shuffleResourceListeners.get(jobID);
     if (shuffleResourceListener != null) {
-      shuffleResourceListener.removePartitionResource(shuffleId, partitionId);
+      shuffleResourceListener.removePartitionResource(
+          new RemovePartitionOperationLog(jobID, shuffleId, partitionId));
     }
   }
 
@@ -106,7 +149,9 @@ public class ShuffleResourceTracker implements WorkerStatusListener {
                         .forEach(
                             id -> {
                               ResultPartitionID resultPartitionId =
-                                  shuffleResourceListener.removePartitionResource(shuffleId, id);
+                                  shuffleResourceListener.removePartitionResource(
+                                      new RemovePartitionOperationLog(
+                                          entry.getKey(), shuffleId, id));
                               if (resultPartitionId != null) {
                                 partitionIds.add(resultPartitionId);
                               }
@@ -126,25 +171,43 @@ public class ShuffleResourceTracker implements WorkerStatusListener {
     }
   }
 
+  public Set<Integer> getJobShuffleIds(JobID jobID) {
+    return shuffleResourceListeners.get(jobID).getShuffleIds();
+  }
+
+  public Set<JobID> getJobs() {
+    return shuffleResourceListeners.keySet();
+  }
+
   public static class JobShuffleResourceListener {
 
-    private final JobShuffleContext context;
+    private JobShuffleContext context;
     private final ExecutorService executorService;
     // celeborn shuffleId -> partitionId -> Flink ResultPartitionID
     private Map<Integer, Map<Integer, ResultPartitionID>> resultPartitionMap =
         new ConcurrentHashMap<>();
 
+    private RecoverableStore recoverableStore;
+
     public JobShuffleResourceListener(
-        JobShuffleContext jobShuffleContext, ExecutorService executorService) {
+        JobShuffleContext jobShuffleContext,
+        ExecutorService executorService,
+        RecoverableStore recoverableStore) {
       this.context = jobShuffleContext;
       this.executorService = executorService;
+      this.recoverableStore = recoverableStore;
     }
 
-    public void addPartitionResource(
-        int shuffleId, int partitionId, ResultPartitionID partitionID) {
+    public void setContext(JobShuffleContext context) {
+      this.context = context;
+    }
+
+    public void addPartitionResource(AddPartitionOperationLog operationLog) {
+      recoverableStore.writeOperation(operationLog);
       Map<Integer, ResultPartitionID> shufflePartitionMap =
-          resultPartitionMap.computeIfAbsent(shuffleId, (s) -> new ConcurrentHashMap<>());
-      shufflePartitionMap.put(partitionId, partitionID);
+          resultPartitionMap.computeIfAbsent(
+              operationLog.getShuffleId(), (s) -> new ConcurrentHashMap<>());
+      shufflePartitionMap.put(operationLog.getPartitionId(), operationLog.getPartitionID());
     }
 
     private void notifyStopTrackingPartitions(
@@ -194,13 +257,20 @@ public class ShuffleResourceTracker implements WorkerStatusListener {
       return resultPartitionMap;
     }
 
-    public ResultPartitionID removePartitionResource(int shuffleId, int partitionId) {
-      Map<Integer, ResultPartitionID> partitionIDMap = resultPartitionMap.get(shuffleId);
+    public ResultPartitionID removePartitionResource(
+        RemovePartitionOperationLog removePartitionOperationLog) {
+      recoverableStore.writeOperation(removePartitionOperationLog);
+      Map<Integer, ResultPartitionID> partitionIDMap =
+          resultPartitionMap.get(removePartitionOperationLog.getShuffleId());
       if (partitionIDMap != null) {
-        return partitionIDMap.remove(partitionId);
+        return partitionIDMap.remove(removePartitionOperationLog.getPartitionId());
       }
 
       return null;
+    }
+
+    public Set<Integer> getShuffleIds() {
+      return resultPartitionMap.keySet();
     }
   }
 }

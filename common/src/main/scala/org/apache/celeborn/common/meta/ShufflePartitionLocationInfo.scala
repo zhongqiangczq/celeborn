@@ -24,7 +24,7 @@ import scala.collection.JavaConverters._
 
 import org.apache.celeborn.common.protocol.PartitionLocation
 
-class ShufflePartitionLocationInfo {
+class ShufflePartitionLocationInfo extends Serializable {
   type PartitionInfo = ConcurrentHashMap[Int, util.Set[PartitionLocation]]
 
   private val primaryPartitionLocations = new PartitionInfo

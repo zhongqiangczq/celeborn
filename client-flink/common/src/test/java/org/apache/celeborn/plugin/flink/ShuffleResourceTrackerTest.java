@@ -34,6 +34,7 @@ import org.mockito.Mockito;
 
 import org.apache.celeborn.client.LifecycleManager;
 import org.apache.celeborn.client.listener.WorkersStatus;
+import org.apache.celeborn.client.recover.DummyRecoverableStore;
 import org.apache.celeborn.common.meta.ShufflePartitionLocationInfo;
 import org.apache.celeborn.common.meta.WorkerInfo;
 import org.apache.celeborn.common.protocol.PartitionLocation;
@@ -58,7 +59,7 @@ public class ShuffleResourceTrackerTest {
     Mockito.when(lifecycleManager.workerSnapshots(Mockito.anyInt())).thenReturn(map, map2, map3);
 
     ShuffleResourceTracker shuffleResourceTracker =
-        new ShuffleResourceTracker(executor, lifecycleManager);
+        new ShuffleResourceTracker(executor, lifecycleManager, new DummyRecoverableStore());
 
     JobID jobID1 = new JobID();
     shuffleResourceTracker.registerJob(createJobShuffleContext(jobID1));

@@ -30,6 +30,7 @@ import org.apache.celeborn.client.CommitManager.CommittedPartitionInfo
 import org.apache.celeborn.client.LifecycleManager.ShuffleFailedWorkers
 import org.apache.celeborn.client.commit.{CommitHandler, MapPartitionCommitHandler, ReducePartitionCommitHandler}
 import org.apache.celeborn.client.listener.{WorkersStatus, WorkerStatusListener}
+import org.apache.celeborn.client.recover.{CommitOperationLog, OperationLog, Restore, ShuffleEpochOperationLog}
 import org.apache.celeborn.common.CelebornConf
 import org.apache.celeborn.common.internal.Logging
 import org.apache.celeborn.common.meta.WorkerInfo
@@ -70,7 +71,7 @@ object CommitManager {
 }
 
 class CommitManager(appUniqueId: String, val conf: CelebornConf, lifecycleManager: LifecycleManager)
-  extends Logging {
+  extends Logging with Restore {
 
   // shuffle id -> ShuffleCommittedInfo
   private val committedPartitionInfo = new CommittedPartitionInfo
@@ -264,6 +265,10 @@ class CommitManager(appUniqueId: String, val conf: CelebornConf, lifecycleManage
 
   private def getCommitHandler(shuffleId: Int): CommitHandler = {
     val partitionType = lifecycleManager.getPartitionType(shuffleId)
+    getCommitHandler(partitionType)
+  }
+
+  private def getCommitHandler(partitionType: PartitionType): CommitHandler = {
     if (commitHandlers.containsKey(partitionType)) {
       commitHandlers.get(partitionType)
     } else {
@@ -276,13 +281,15 @@ class CommitManager(appUniqueId: String, val conf: CelebornConf, lifecycleManage
                 conf,
                 lifecycleManager.shuffleAllocatedWorkers,
                 committedPartitionInfo,
-                lifecycleManager.workerStatusTracker)
+                lifecycleManager.workerStatusTracker,
+                lifecycleManager.recoverableStore)
             case PartitionType.MAP => new MapPartitionCommitHandler(
                 appUniqueId,
                 conf,
                 lifecycleManager.shuffleAllocatedWorkers,
                 committedPartitionInfo,
-                lifecycleManager.workerStatusTracker)
+                lifecycleManager.workerStatusTracker,
+                lifecycleManager.recoverableStore)
             case _ => throw new UnsupportedOperationException(
                 s"Unexpected ShufflePartitionType for CommitManager: $partitionType")
           }
@@ -323,6 +330,18 @@ class CommitManager(appUniqueId: String, val conf: CelebornConf, lifecycleManage
           }
         }
       }
+    }
+  }
+
+  override def replay(operationLog: OperationLog): Unit = {
+    operationLog.getType match {
+      case OperationLog.Type.COMMIT_RESOURCE =>
+        val committedOperationLog = operationLog.asInstanceOf[CommitOperationLog]
+        getCommitHandler(committedOperationLog.getShuffleId()).replay(committedOperationLog)
+      case OperationLog.Type.SHUFFLE_EPOCH =>
+        val shuffleEpochOperationLog = operationLog.asInstanceOf[ShuffleEpochOperationLog]
+        getCommitHandler(shuffleEpochOperationLog.getPartitionType).replay(shuffleEpochOperationLog)
+      case _ =>
     }
   }
 }
