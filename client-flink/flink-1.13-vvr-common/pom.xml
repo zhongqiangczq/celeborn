@@ -24,9 +24,9 @@
     <relativePath>../../pom.xml</relativePath>
   </parent>
 
-  <artifactId>celeborn-client-flink-common_${scala.binary.version}</artifactId>
+  <artifactId>celeborn-client-flink-1.13-vvr-common_${scala.binary.version}</artifactId>
   <packaging>jar</packaging>
-  <name>Celeborn Client for Flink Common</name>
+  <name>Celeborn Client for Flink 1.13-vvr Common</name>
 
   <dependencies>
     <dependency>

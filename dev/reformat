@@ -19,6 +19,7 @@
 set -x
 
 PROJECT_DIR="$(cd "`dirname "$0"`/.."; pwd)"
+${PROJECT_DIR}/build/mvn spotless:apply -Pflink-1.13-vvr
 ${PROJECT_DIR}/build/mvn spotless:apply -Pflink-1.14
 ${PROJECT_DIR}/build/mvn spotless:apply -Pflink-1.15
 ${PROJECT_DIR}/build/mvn spotless:apply -Pflink-1.17
