@@ -722,15 +722,11 @@ private[celeborn] class Master(
       requestId)
     // unknown workers will retain in needCheckedWorkerList
     needCheckedWorkerList.removeAll(workersSnapShot)
-    if (shouldResponse) {
-      context.reply(HeartbeatFromApplicationResponse(
-        StatusCode.SUCCESS,
-        new util.ArrayList(statusSystem.excludedWorkers),
-        needCheckedWorkerList,
-        shutdownWorkerSnapshot))
-    } else {
-      context.reply(OneWayMessageResponse)
-    }
+    context.reply(HeartbeatFromApplicationResponse(
+      StatusCode.SUCCESS,
+      new util.ArrayList(statusSystem.excludedWorkers),
+      needCheckedWorkerList,
+      shutdownWorkerSnapshot))
   }
 
   private def computeUserResourceConsumption(userIdentifier: UserIdentifier)
