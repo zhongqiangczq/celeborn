@@ -177,7 +177,7 @@ class FetchHandler(val conf: CelebornConf, val transportConf: TransportConf)
         case PartitionType.MAPGROUP =>
       } catch {
         case e: IOException =>
-          handleRpcIOException(client, request.requestId, e)
+          handleRpcIOException(client, request.requestId, shuffleKey, fileName, e)
       } finally {
         // metrics end
         workerSource.stopTimer(WorkerSource.OPEN_STREAM_TIME, shuffleKey)
@@ -186,20 +186,25 @@ class FetchHandler(val conf: CelebornConf, val transportConf: TransportConf)
     } catch {
       case ioe: IOException =>
         workerSource.stopTimer(WorkerSource.OPEN_STREAM_TIME, shuffleKey)
-        handleRpcIOException(client, request.requestId, ioe)
+        handleRpcIOException(client, request.requestId, shuffleKey, fileName, ioe)
     }
   }
 
   private def handleRpcIOException(
       client: TransportClient,
       requestId: Long,
+      shuffleKey: String,
+      fileName: String,
       ioe: IOException): Unit = {
     // if open stream rpc failed, this IOException actually should be FileNotFoundException
     // we wrapper this IOException(Other place may have other exception like FileCorruptException) unify to
     // PartitionUnRetryableException for reader can give up this partition and choose to regenerate the partition data
+    logError(
+      s"Read file: $fileName with shuffleKey: $shuffleKey error from ${NettyUtils.getRemoteAddress(client.getChannel)}",
+      ioe)
     client.getChannel.writeAndFlush(new RpcFailure(
       requestId,
-      Throwables.getStackTraceAsString(ExceptionUtils.wrapIOExceptionToUnRetryable(ioe, false))))
+      Throwables.getStackTraceAsString(ExceptionUtils.wrapIOExceptionToUnRetryable(ioe))))
   }
 
   def handleEndStreamFromClient(req: BufferStreamEnd): Unit = {
