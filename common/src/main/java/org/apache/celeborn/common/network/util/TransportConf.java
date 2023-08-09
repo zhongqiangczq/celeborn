@@ -153,4 +153,8 @@ public class TransportConf {
   public long clientHearbeatInterval() {
     return celebornConf.clientHeartbeatInterval(module);
   }
+
+  public String ipPrefixBasedNetworkExceptionLogFilter() {
+    return celebornConf.ipPrefixBasedNetworkExceptionLogFilter();
+  }
 }

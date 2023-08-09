@@ -152,7 +152,8 @@ public class TransportContext {
         conf.connectionTimeoutMs(),
         closeIdleConnections,
         enableHeartbeat,
-        conf.clientHearbeatInterval());
+        conf.clientHearbeatInterval(),
+        conf.ipPrefixBasedNetworkExceptionLogFilter());
   }
 
   public TransportConf getConf() {

@@ -466,6 +466,9 @@ class CelebornConf(loadDefaults: Boolean) extends Cloneable with Logging with Se
 
   def networkAllocatorVerboseMetric: Boolean = get(NETWORK_MEMORY_ALLOCATOR_VERBOSE_METRIC)
 
+  def ipPrefixBasedNetworkExceptionLogFilter: String =
+    get(IP_PREFIX_BASED_NETWORK_EXCEPTION_LOG_FILTER)
+
   def shuffleIoMaxChunksBeingTransferred: Long = {
     get(MAX_CHUNKS_BEING_TRANSFERRED)
   }
@@ -3704,5 +3707,13 @@ object CelebornConf extends Logging {
       .stringConf
       .transform(_.toUpperCase(Locale.ROOT))
       .createWithDefault("HDD,SSD")
+
+  val IP_PREFIX_BASED_NETWORK_EXCEPTION_LOG_FILTER: ConfigEntry[String] =
+    buildConf("celeborn.network.exceptionLogFilter.ipPrefix")
+      .categories("master")
+      .version("0.3.0")
+      .doc("some channel exception log should be filtered by ip prefix")
+      .stringConf
+      .createWithDefault("/100.")
 
 }

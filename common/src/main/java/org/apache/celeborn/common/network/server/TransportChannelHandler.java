@@ -62,6 +62,7 @@ public class TransportChannelHandler extends ChannelInboundHandlerAdapter {
   private ScheduledFuture<?> heartbeatFuture;
   private boolean heartbeatFutureCanceled = false;
   private boolean enableHeartbeat;
+  private String ipPrefixBasedNetworkExceptionLogFilter;
 
   public TransportChannelHandler(
       TransportClient client,
@@ -70,7 +71,8 @@ public class TransportChannelHandler extends ChannelInboundHandlerAdapter {
       long requestTimeoutMs,
       boolean closeIdleConnections,
       boolean enableHeartbeat,
-      long heartbeatInterval) {
+      long heartbeatInterval,
+      String ipPrefixBasedNetworkExceptionLogFilter) {
     this.client = client;
     this.responseHandler = responseHandler;
     this.requestHandler = requestHandler;
@@ -78,6 +80,7 @@ public class TransportChannelHandler extends ChannelInboundHandlerAdapter {
     this.enableHeartbeat = enableHeartbeat;
     this.heartbeatInterval = heartbeatInterval;
     this.closeIdleConnections = closeIdleConnections;
+    this.ipPrefixBasedNetworkExceptionLogFilter = ipPrefixBasedNetworkExceptionLogFilter;
   }
 
   public TransportClient getClient() {
@@ -86,8 +89,10 @@ public class TransportChannelHandler extends ChannelInboundHandlerAdapter {
 
   @Override
   public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-    logger.warn(
-        "Exception in connection from " + NettyUtils.getRemoteAddress(ctx.channel()), cause);
+    String remoteAddress = NettyUtils.getRemoteAddress(ctx.channel());
+    if (!remoteAddress.startsWith(ipPrefixBasedNetworkExceptionLogFilter)) {
+      logger.warn("Exception in connection from " + remoteAddress, cause);
+    }
     closeHeartbeat();
     requestHandler.exceptionCaught(cause);
     responseHandler.exceptionCaught(cause);
