@@ -177,9 +177,9 @@ public class FileInfo {
             e);
       }
     } else {
-      getFile().delete();
-      new File(getIndexPath()).delete();
-      new File(getSortedPath()).delete();
+      //      getFile().delete();
+      //      new File(getIndexPath()).delete();
+      //      new File(getSortedPath()).delete();
     }
   }
 
