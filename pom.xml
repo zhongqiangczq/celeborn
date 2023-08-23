@@ -1052,6 +1052,7 @@
         <module>client-flink/flink-1.15</module>
         <module>client-flink/flink-1.15-shaded</module>
         <module>tests/flink-it</module>
+        <module>tests/flink-it-parser-shaded</module>
       </modules>
       <properties>
         <flink.version>1.15-vvr-6.0.6-SNAPSHOT</flink.version>
@@ -1072,6 +1073,7 @@
         <module>client-flink/flink-1.17</module>
         <module>client-flink/flink-1.17-shaded</module>
         <module>tests/flink-it</module>
+        <module>tests/flink-it-parser-shaded</module>
       </modules>
       <properties>
         <flink.version>1.17-vvr-8.0.0-SNAPSHOT</flink.version>

@@ -29,9 +29,9 @@ import org.apache.flink.util.Collector;
 
 public class WordCountHelper2 {
 
-  private static final int NUM_WORDS = 20;
+  private static final int NUM_WORDS = 200;
 
-  private static final int WORD_COUNT = 200;
+  private static final int WORD_COUNT = 2000;
 
   public static void execute(StreamExecutionEnvironment env, int parallelism) {
     DataStream<Tuple2<String, Long>> words =

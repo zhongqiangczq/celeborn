@@ -97,7 +97,7 @@ public final class MapPartitionFileWriter extends FileWriter {
     int size = data.readInt();
 
     data.resetReaderIndex();
-    logger.debug(
+    logger.info(
         "mappartition filename:{} write partition:{} attemptId:{} batchId:{} size:{}",
         fileInfo.getFilePath(),
         partitionId,
@@ -203,7 +203,7 @@ public final class MapPartitionFileWriter extends FileWriter {
     for (int partitionIndex = 0; partitionIndex < numSubpartitions; ++partitionIndex) {
       indexBuffer.putLong(fileOffset);
       if (!isBroadcastRegion) {
-        logger.debug(
+        logger.info(
             "flush index filename:{} region:{} partitionid:{} flush index fileOffset:{}, size:{} ",
             fileInfo.getFilePath(),
             currentDataRegionIndex,
@@ -214,7 +214,7 @@ public final class MapPartitionFileWriter extends FileWriter {
         indexBuffer.putLong(numSubpartitionBytes[partitionIndex]);
         fileOffset += numSubpartitionBytes[partitionIndex];
       } else {
-        logger.debug(
+        logger.info(
             "flush index broadcast filename:{} region:{} partitionid:{}  fileOffset:{}, size:{} ",
             fileInfo.getFilePath(),
             currentDataRegionIndex,
